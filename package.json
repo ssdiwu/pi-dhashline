@@ -1,6 +1,6 @@
 {
   "name": "pi-dhashline",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Zero-runtime-dependency hash-anchored read, edit, and search tools for Pi.",
   "type": "module",
   "main": "index.ts",

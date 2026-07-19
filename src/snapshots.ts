@@ -67,6 +67,17 @@ export class SnapshotStore {
     return tag;
   }
 
+  recordFresh(path: string, text: string): string {
+    const tag = computeFileTag(text);
+    const history = this.#histories.get(path) ?? [];
+    const existing = history.find((entry) => entry.tag === tag && entry.text === text);
+    if (!existing) return this.record(path, text);
+    existing.recordedAt = Date.now();
+    existing.seenLines.clear();
+    this.#replace(path, [existing, ...history.filter((entry) => entry !== existing)]);
+    return tag;
+  }
+
   head(path: string): Snapshot | null {
     this.#touch(path);
     return this.#histories.get(path)?.[0] ?? null;

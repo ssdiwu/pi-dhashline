@@ -73,4 +73,31 @@ describe("session persistence", () => {
     );
     expect(await readFile(path, "utf8")).toBe("one\nTWO\n");
   });
+
+  it("persists a fresh-state marker so recreated content does not regain old seen lines", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-dhashline-session-fresh-"));
+    cleanups.push(dir);
+    const path = join(dir, "file.txt");
+    const entries: CustomEntry[] = [];
+    const first = runtime(entries);
+    const firstContext = context(dir, entries);
+    await first.tools.get("write")!.execute("w1", { path: "file.txt", content: "one\n" }, undefined, undefined, firstContext);
+    await first.tools.get("read")!.execute("r1", { path: "file.txt" }, undefined, undefined, firstContext);
+    await rm(path);
+    const recreated = await first.tools.get("write")!.execute(
+      "w2",
+      { path: "file.txt", content: "one\n" },
+      undefined,
+      undefined,
+      firstContext,
+    );
+    const freshHeader = textOf(recreated).split("\n")[1]!;
+
+    const resumed = runtime(entries);
+    const resumedContext = context(dir, entries);
+    await resumed.events.get("session_start")!({ type: "session_start", reason: "resume" }, resumedContext);
+    await expect(
+      resumed.tools.get("edit")!.execute("e1", { input: `${freshHeader}\nDEL 1` }, undefined, undefined, resumedContext),
+    ).rejects.toThrow(/not shown/);
+  });
 });

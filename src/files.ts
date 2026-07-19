@@ -1,8 +1,8 @@
 import { constants } from "node:fs";
 import { isUtf8 } from "node:buffer";
-import { access, lstat, open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
+import { access, link, lstat, open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { normalizeText, SNAPSHOT_MAX_BYTES } from "./hash.js";
 
@@ -23,6 +23,14 @@ export interface DiffDetails {
   readonly patch: string;
   readonly firstChangedLine: number;
 }
+
+export interface CreatedTextFile {
+  readonly requestedPath: string;
+  readonly targetPath: string;
+  readonly normalizedText: string;
+  readonly size: number;
+}
+
 
 export function resolveInputPath(cwd: string, input: string): string {
   const expanded = input === "~" ? homedir() : input.startsWith("~/") ? resolve(homedir(), input.slice(2)) : input;
@@ -109,6 +117,106 @@ export async function atomicWriteText(file: TextFile, normalizedText: string): P
     await unlink(tempPath).catch(() => undefined);
     throw error;
   }
+}
+
+export async function createTextFileExclusive(path: string, content: string, maxBytes = SNAPSHOT_MAX_BYTES): Promise<CreatedTextFile> {
+  if (!isWellFormedText(content)) throw new Error(`Content is not valid Unicode text: ${path}`);
+  const requestedPath = resolve(path);
+  const bytes = Buffer.from(content, "utf8");
+  if (bytes.length > maxBytes) throw new Error(`Content exceeds ${maxBytes} byte editable limit: ${path}`);
+  if (isProbablyBinary(bytes)) throw new Error(`Binary content cannot be created by DHashline write: ${path}`);
+
+  const requestedParent = dirname(requestedPath);
+  let parentInfo;
+  try {
+    parentInfo = await lstat(requestedParent);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") throw new Error(`Parent directory does not exist; create it before writing: ${requestedParent}`);
+    throw error;
+  }
+  if (parentInfo.isSymbolicLink() || !parentInfo.isDirectory()) {
+    throw new Error(`Parent path is not a real directory: ${requestedParent}`);
+  }
+
+  const canonicalParent = await realpath(requestedParent);
+  const targetPath = resolve(canonicalParent, basename(requestedPath));
+  const tempPath = resolve(canonicalParent, `.${randomBytes(16).toString("hex")}.dhashline-create.tmp`);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let sourceIdentity: { dev: number; ino: number } | undefined;
+  let linkAttempted = false;
+  let linked = false;
+  try {
+    handle = await open(tempPath, "wx+", 0o666);
+    await handle.writeFile(bytes);
+    await handle.sync();
+    const actual = Buffer.alloc(bytes.length);
+    let bytesRead = 0;
+    while (bytesRead < actual.length) {
+      const chunk = await handle.read(actual, bytesRead, actual.length - bytesRead, bytesRead);
+      if (chunk.bytesRead === 0) break;
+      bytesRead += chunk.bytesRead;
+    }
+    if (bytesRead !== bytes.length || !actual.equals(bytes)) throw new Error(`Created file verification failed: ${path}`);
+    const source = await handle.stat();
+    sourceIdentity = { dev: source.dev, ino: source.ino };
+    await handle.close();
+    handle = undefined;
+
+    linkAttempted = true;
+    await link(tempPath, targetPath);
+    linked = true;
+    const landed = await lstat(targetPath);
+    if (!landed.isFile() || landed.isSymbolicLink() || landed.dev !== source.dev || landed.ino !== source.ino) {
+      throw new Error(`Created file identity verification failed: ${path}`);
+    }
+    await unlink(tempPath);
+    const final = await stat(targetPath);
+    if (final.nlink !== 1) throw new Error(`Created file retained an unexpected hard link: ${path}`);
+    return {
+      requestedPath,
+      targetPath,
+      normalizedText: normalizeText(actual.toString("utf8")),
+      size: final.size,
+    };
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    if (linked && sourceIdentity) await unlinkIfIdentityMatches(targetPath, sourceIdentity);
+    await unlinkIfIdentityMatches(tempPath, sourceIdentity);
+    if (linkAttempted && errorCode(error) === "EEXIST") {
+      throw new Error(`Target already exists; DHashline write only creates new files and did not write: ${path}`);
+    }
+    throw error;
+  }
+}
+
+async function unlinkIfIdentityMatches(path: string, identity: { dev: number; ino: number } | undefined): Promise<void> {
+  if (!identity) return;
+  try {
+    const current = await lstat(path);
+    if (current.isFile() && !current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino) {
+      await unlink(path);
+    }
+  } catch {
+    // A missing or replaced path is not ours to remove.
+  }
+}
+
+function isWellFormedText(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!Number.isFinite(next) || next < 0xdc00 || next > 0xdfff) return false;
+      index++;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code) : undefined;
 }
 
 function commonEdges(oldLines: string[], newLines: string[]): { prefix: number; suffix: number } {

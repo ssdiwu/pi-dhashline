@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { rm } from "node:fs/promises";
-import { atomicWriteText, readTextFile } from "../src/files.js";
+import { atomicWriteText, createTextFileExclusive, readTextFile } from "../src/files.js";
 
 const cleanups: string[] = [];
 afterEach(async () => {
@@ -52,6 +52,47 @@ describe("text file mutation", () => {
     await expect(atomicWriteText(file, "new\n")).rejects.toThrow(/hard link/i);
     expect(await readFile(first, "utf8")).toBe("old\n");
     expect((await stat(first)).ino).toBe((await stat(second)).ino);
+  });
+
+  it("creates a new text file exclusively inside an existing real parent", async () => {
+    const dir = await temp();
+    const parent = join(dir, "nested", "deep");
+    await mkdir(parent, { recursive: true });
+    const path = join(parent, "file.txt");
+    const created = await createTextFileExclusive(path, "one\r\ntwo\r\n");
+    expect(await readFile(path, "utf8")).toBe("one\r\ntwo\r\n");
+    expect(created.normalizedText).toBe("one\ntwo\n");
+    expect(created.size).toBe(Buffer.byteLength("one\r\ntwo\r\n"));
+  });
+
+  it("rejects existing files and symbolic links without changing their content", async () => {
+    const dir = await temp();
+    const existing = join(dir, "existing.txt");
+    const target = join(dir, "target.txt");
+    const alias = join(dir, "alias.txt");
+    await writeFile(existing, "keep\n");
+    await writeFile(target, "target\n");
+    await symlink(target, alias);
+    await expect(createTextFileExclusive(existing, "replace\n")).rejects.toThrow(/already exists|did not write/i);
+    await expect(createTextFileExclusive(alias, "replace\n")).rejects.toThrow(/already exists|did not write/i);
+    expect(await readFile(existing, "utf8")).toBe("keep\n");
+    expect(await readFile(target, "utf8")).toBe("target\n");
+    expect((await lstat(alias)).isSymbolicLink()).toBe(true);
+    const parentAlias = join(dir, "parent-alias");
+    await symlink(dir, parentAlias);
+    await expect(createTextFileExclusive(join(parentAlias, "new.txt"), "new\n")).rejects.toThrow(/Parent path/);
+    await expect(lstat(join(dir, "new.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects unsafe content and missing parents without leaving a target", async () => {
+    const dir = await temp();
+    await expect(createTextFileExclusive(join(dir, "bad.txt"), "ok\u0000bad")).rejects.toThrow(/Binary/);
+    await expect(createTextFileExclusive(join(dir, "unicode.txt"), "\ud800")).rejects.toThrow(/Unicode/);
+    await expect(createTextFileExclusive(join(dir, "large.txt"), "123456", 5)).rejects.toThrow(/exceeds/);
+
+    const missingParent = join(dir, "missing-parent");
+    await expect(createTextFileExclusive(join(missingParent, "file.txt"), "text\n")).rejects.toThrow(/Parent directory does not exist/);
+    await expect(lstat(missingParent)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects oversized and binary files", async () => {

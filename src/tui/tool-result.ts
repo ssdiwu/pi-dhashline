@@ -1,4 +1,4 @@
-export type DHashlineToolKind = "read" | "edit" | "search";
+export type DHashlineToolKind = "read" | "edit" | "search" | "write";
 
 type ToolArgs = Record<string, unknown>;
 
@@ -32,6 +32,11 @@ export function humanizeToolCall(kind: DHashlineToolKind, args: ToolArgs): strin
   if (kind === "search") {
     return `search ${quote(text(args.pattern) || "未知模式")} · ${text(args.path) || "."}`;
   }
+  if (kind === "write") {
+    const content = multiline(args.content);
+    const lines = content.length === 0 ? 0 : content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+    return `write ${text(args.path) || "未知文件"} · 创建 ${lines} 行`;
+  }
   const patch = parseEditInput(multiline(args.input));
   const summary = actionSummary(patch.actions);
   return `edit ${patch.path || "未知文件"}${summary ? ` · ${summary}` : ""}`;
@@ -42,31 +47,33 @@ export function humanizeToolResult(
   result: any,
   expanded: boolean,
   args: ToolArgs = {},
+  expandHint = "Ctrl+O 展开",
 ): string {
-  if (result?.isError) return errorText(kind, result, expanded, args);
-  if (kind === "read") return readText(result, expanded, args);
-  if (kind === "search") return searchText(result, expanded, args);
-  return editText(result, expanded, args);
+  if (result?.isError) return errorText(kind, result, expanded, args, expandHint);
+  if (kind === "read") return readText(result, expanded, args, expandHint);
+  if (kind === "search") return searchText(result, expanded, args, expandHint);
+  if (kind === "write") return writeText(result, expanded, args, expandHint);
+  return editText(result, expanded, args, expandHint);
 }
 
-function readText(result: any, expanded: boolean, args: ToolArgs): string {
+function readText(result: any, expanded: boolean, args: ToolArgs, expandHint: string): string {
   const sections = parseAnchorSections(resultText(result));
   const section = sections[0];
   if (!section) return `read ${text(args.path) || "未知文件"} · 无可显示文本`;
   const summary = `read ${section.path} · ${section.lines.length} 行 · tag ${section.tag}`;
-  if (!expanded) return `${summary}（Ctrl+O 展开）`;
-  const lines = [summary, "", ...anchorLines(section), "", ...editExamples(section.lines[0]?.number)];
+  if (!expanded) return withExpandHint(summary, expandHint);
+  const lines = [summary, "", ...boundaryAnchorLines(section), "", ...editExamples(section.lines[0]?.number)];
   appendTruncation(lines, result?.details?.truncation);
   return lines.join("\n");
 }
 
-function searchText(result: any, expanded: boolean, args: ToolArgs): string {
+function searchText(result: any, expanded: boolean, args: ToolArgs, expandHint: string): string {
   const raw = resultText(result);
   const sections = parseAnchorSections(raw);
   if (sections.length === 0) return `search ${quote(text(args.pattern) || "未知模式")} · 无匹配`;
   const matches = sections.reduce((count, section) => count + section.lines.filter((line) => line.match).length, 0);
   const summary = `search ${quote(text(args.pattern) || "未知模式")} · ${sections.length} 个文件、${matches} 处匹配`;
-  if (!expanded) return `${summary}（Ctrl+O 展开）`;
+  if (!expanded) return withExpandHint(summary, expandHint);
   const lines = [summary];
   for (const section of sections) {
     lines.push("", `${section.path} · tag ${section.tag}`, ...anchorLines(section));
@@ -77,7 +84,7 @@ function searchText(result: any, expanded: boolean, args: ToolArgs): string {
   return lines.join("\n");
 }
 
-function editText(result: any, expanded: boolean, args: ToolArgs): string {
+function editText(result: any, expanded: boolean, args: ToolArgs, expandHint: string): string {
   const patch = parseEditInput(multiline(args.input));
   const resultSections = parseAnchorSections(resultText(result));
   const fresh = resultSections[0];
@@ -85,16 +92,13 @@ function editText(result: any, expanded: boolean, args: ToolArgs): string {
   const actions = actionSummary(patch.actions);
   const tagPart = fresh ? ` · tag ${fresh.tag}` : "";
   const summary = `已更新 ${path}${actions ? ` · ${actions}` : ""}${tagPart}`;
-  if (!expanded) return `${summary}（Ctrl+O 展开）`;
+  if (!expanded) return withExpandHint(summary, expandHint);
   const lines = [
     summary,
     "",
     ...(patch.header ? [`请求锚点：${patch.header}`, ""] : []),
     "动作：",
-    ...patch.actions.map((action) => `- ${action.label}${bodySuffix(action.body)}`),
-    "",
-    "本次协议（仅供审计，不要重复执行）：",
-    ...protocolLines(multiline(args.input)),
+    ...patch.actions.map((action) => `- ${action.label}`),
   ];
   const warning = resultText(result).split("\n").find((line) => line.startsWith("Warning:"));
   if (warning) lines.push("", `恢复告警：${warning.slice("Warning:".length).trim()}`);
@@ -104,12 +108,33 @@ function editText(result: any, expanded: boolean, args: ToolArgs): string {
   return lines.join("\n");
 }
 
-function errorText(kind: DHashlineToolKind, result: any, expanded: boolean, args: ToolArgs): string {
+function writeText(result: any, expanded: boolean, args: ToolArgs, expandHint: string): string {
+  const details = result?.details as { path?: string; tag?: string; lines?: number; bytes?: number } | undefined;
+  const section = parseAnchorSections(resultText(result))[0];
+  const path = details?.path || section?.path || text(args.path) || "未知文件";
+  const tag = details?.tag || section?.tag;
+  const lineCount = details?.lines ?? 0;
+  const bytes = details?.bytes ?? 0;
+  const summary = `已创建 ${path} · ${lineCount} 行${tag ? ` · tag ${tag}` : ""}`;
+  if (!expanded) return withExpandHint(summary, expandHint);
+  return [
+    summary,
+    "",
+    ...(tag ? [`结果锚点：[${path}#${tag}]`] : []),
+    `大小：${bytes} bytes`,
+    `行数：${lineCount}`,
+    "写入方式：仅创建，未覆盖已有文件。",
+    "",
+    "下一步：继续编辑前请先 read 或 search，以建立已见行。",
+  ].join("\n");
+}
+
+function errorText(kind: DHashlineToolKind, result: any, expanded: boolean, args: ToolArgs, expandHint: string): string {
   const raw = resultText(result) || `${kind} 操作失败`;
   const path = kind === "edit" ? parseEditInput(multiline(args.input)).path : text(args.path);
   const label = errorLabel(raw);
   const summary = `${kind}${path ? ` ${path}` : ""} · ${label}`;
-  if (!expanded) return `${summary}（Ctrl+O 展开）`;
+  if (!expanded) return withExpandHint(summary, expandHint);
   const lines = [summary, "", `原因：${sanitize(raw)}`];
   const received = /Unknown patch syntax at line \d+: (.*?)(?:\. Expected|$)/i.exec(raw)?.[1];
   if (received) {
@@ -172,6 +197,17 @@ function anchorLines(section: AnchorSection): string[] {
   return section.lines.map((line) => `${line.number}  ${line.text}${line.match ? " · 匹配" : ""}`);
 }
 
+function boundaryAnchorLines(section: AnchorSection): string[] {
+  if (section.lines.length <= 2) return anchorLines(section);
+  const first = section.lines[0]!;
+  const last = section.lines.at(-1)!;
+  return [
+    `${first.number}  ${first.text}${first.match ? " · 匹配" : ""}`,
+    `… 省略第 ${first.number + 1}–${last.number - 1} 行 …`,
+    `${last.number}  ${last.text}${last.match ? " · 匹配" : ""}`,
+  ];
+}
+
 function editExamples(lineNumber: number | undefined): string[] {
   if (lineNumber === undefined) return [];
   return [
@@ -197,15 +233,17 @@ function expectedSyntax(received: string): string {
 
 function errorLabel(raw: string): string {
   if (/Unknown patch syntax|Patch must start|requires one or more \+body/i.test(raw)) return "语法错误";
+  if (/Target already exists|only creates new files/i.test(raw)) return "目标已存在，未写入";
   if (/already matches|already satisfied/i.test(raw)) return "操作已经满足";
   if (/not shown/i.test(raw)) return "锚点未显示";
   if (/stale|changed|collision/i.test(raw)) return "标签或锚点已失效";
   if (/hard links?/i.test(raw)) return "硬链接写入被拒绝";
-  if (/UTF-8|Binary/i.test(raw)) return "文件格式不支持";
+  if (/UTF-8|Unicode|Binary/i.test(raw)) return "文件格式不支持";
   return "操作失败";
 }
 
 function errorAdvice(raw: string): string {
+  if (/Target already exists|only creates new files/i.test(raw)) return "目标未被修改；先 read 获取当前 tag，再使用 edit。";
   if (/already matches|already satisfied/i.test(raw)) return "以最新 read/search 为准，删除已满足操作；不要为服从旧描述而重复插入内容。";
   if (/not shown/i.test(raw)) return "重新 read 或 search 目标行，再使用新返回的 tag 编辑。";
   if (/stale|changed|collision/i.test(raw)) return "重新 read 相关行，不要猜测旧锚点。";
@@ -217,13 +255,10 @@ function rangeText(start: string, end: string | undefined): string {
   return end && end !== start ? `第 ${start}–${end} 行` : `第 ${start} 行`;
 }
 
-function bodySuffix(body: string[]): string {
-  if (body.length === 0) return "";
-  return `：${body.map(inline).join(" ↵ ")}`;
-}
 
-function protocolLines(input: string): string[] {
-  return sanitize(input).split("\n").map((line) => line.replace(/\r$/, ""));
+
+function withExpandHint(summary: string, expandHint: string): string {
+  return `${summary}（${expandHint}）`;
 }
 
 function appendTruncation(lines: string[], truncation: any): void {

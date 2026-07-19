@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-20
+
+### Added
+
+- Added a create-only `write` override that atomically publishes fully written UTF-8 text files inside existing real parent directories, returns a fresh tag, and refuses existing targets without overwriting them.
+
+### Changed
+
+- Reduced expanded `read` output to the visible window boundaries and edit diff context to one line around each hunk.
+- Replaced hard-coded `Ctrl+O` text with Pi's active expand key hint and added the shared two-layer projection to `write`.
+- Added an actionable `offset` continuation hint when model-visible `read` output is truncated.
+
+### Security
+
+- Prevented native `write` from bypassing DHashline tag and seen-line protections on existing files.
+- Reject oversized, binary-like, malformed Unicode, symlink, and raced create targets; target files are published only after complete temporary-file verification.
+- Reset and persist empty seen-line state for fresh edit/write snapshots, including recreated content that matches an older tag.
+
 ## [0.1.0] - 2026-07-20
 
 ### Added

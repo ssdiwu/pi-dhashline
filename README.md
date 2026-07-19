@@ -1,15 +1,16 @@
 # pi-dhashline
 
-`pi-dhashline` 是一个零运行时依赖的 Pi Extension（扩展）：以文件级内容标签替换内置 `read` / `edit`，并新增输出同类锚点的 `search`。
+`pi-dhashline` 是一个零运行时依赖的 Pi Extension（扩展）：以文件级内容标签替换内置 `read` / `edit`，以 create-only（仅创建）语义接管 `write`，并新增输出同类锚点的 `search`。
 
 ## 初版能力
 
 - `read`：输出 `[PATH#TAG]` 与 `LINE:TEXT`，支持 `offset` / `limit` 和图片透传。
 - `edit`：使用紧凑文本协议执行 `SWAP`、`DEL`、`INS.PRE`、`INS.POST`、`INS.HEAD`、`INS.TAIL`。
+- `write`：只原子创建不存在的 UTF-8 文本文件；目标已存在时拒绝且不改任何字节。
 - `search`：复用 Pi 原生搜索能力，按文件返回标签和可直接编辑的行号。
 - 会话级多版本快照、Pi session entry（会话条目）持久化、严格 stale tag（过期标签）拒绝与保守行位移恢复。
-- 文件变更队列、原子写入、BOM / 行尾 / 权限 / 符号链接目标保留；为保证原子性，硬链接文件拒绝编辑。
-- 三个公开工具采用统一人类可读投影：默认只显示动作摘要，按 `Ctrl+O` 展开锚点、编辑动作、diff 与错误修复语法。
+- 文件变更队列、原子创建/替换、BOM / 行尾 / 权限 / 符号链接目标保留；为保证原子性，硬链接文件拒绝编辑。
+- 四个公开工具采用统一人类可读投影：默认只显示动作摘要，使用 Pi 当前展开快捷键查看必要锚点、单行上下文 diff 与错误修复语法。
 
 ## 协议示例
 
@@ -48,16 +49,18 @@ INS.TAIL:
 
 `search` 的匹配行写作 `*LINE:TEXT`，上下文行写作 ` LINE:TEXT`；只有未截断且实际返回给模型的行才可作为编辑锚点。
 
+`write` 保持 Pi 的 `path + content` 参数形状，但只允许创建新文件。成功后返回 fresh tag 且不授予已见行；继续编辑前必须重新 `read` 或 `search`。目标已存在、是符号链接或在创建竞态中出现时均失败关闭。
+
 ## 工具展示
 
-模型仍接收精确标签与行号。人类界面默认显示如 `edit sample.txt · 替换 1 处、插入 1 处 · tag …（Ctrl+O 展开）` 的紧凑摘要；展开后显示可读动作树、diff、锚点和可复制的正确语法，不显示原始 JSON 或内部 details。
+模型仍接收精确标签与行号。人类界面默认显示紧凑摘要；展开后，`read` 只显示本次窗口首尾各一行，`edit` 的每个 hunk 只保留修改前后各一行，`write` 只显示创建元数据而不回显正文。错误展开给出原因、未写入状态和可执行下一步，不显示原始 JSON 或内部 details。
 
 ## 安装与开发
 
 需要 Node.js 22.19.0 或更高版本，以及 Pi 0.80.10 兼容宿主。当前版本仅通过 GitHub tag（GitHub 标签）发布，npm 包暂未发布：
 
 ```bash
-pi install git:github.com/ssdiwu/pi-dhashline@v0.1.0
+pi install git:github.com/ssdiwu/pi-dhashline@v0.1.1
 ```
 
 本地开发：
@@ -96,10 +99,10 @@ pi --no-extensions -e .
 
 ## 当前边界
 
-- 只编辑已存在的有效 UTF-8 本地文本文件；创建文件继续使用 Pi `write`。
+- `write` 只在已存在且非符号链接的父目录中创建新的有效 UTF-8 本地文本文件；已有文件必须使用 `read` + `edit`。
 - 初版每次 `edit` 只接受一个文件 section（文件段）。
 - 不提供文件删除、移动、语法块定位或跨文件事务。
-- 文件默认超过 4 MiB 时 `read` 不签发可编辑标签；可在安全上限内配置。
+- 文件默认超过 4 MiB 时 `read` 不签发可编辑标签，`write` 也拒绝创建；可在安全上限内配置。
 - 仅含 `INS.HEAD` / `INS.TAIL` 的 patch（补丁）无法证明 stale 状态安全，因此文件变化后会拒绝。
 
 ## 验证

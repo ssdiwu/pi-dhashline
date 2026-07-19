@@ -1,4 +1,4 @@
-import { renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
+import { keyHint, renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import { humanizeToolCall, humanizeToolResult, type DHashlineToolKind } from "./tool-result.js";
 
@@ -51,7 +51,7 @@ class DHashlineToolComponent extends Container {
       this.addChild(new Text(stylePending(humanizeToolCall(kind, args), theme), 0, 0));
       return;
     }
-    const projection = humanizeToolResult(kind, result, expanded, args);
+    const projection = humanizeToolResult(kind, result, expanded, args, expandHint());
     if (kind === "edit" && expanded && typeof result?.details?.diff === "string") {
       this.addEditProjection(projection, result.details.diff, editPath(args), isError, theme);
       return;
@@ -120,6 +120,14 @@ function styleProjection(value: string, isError: boolean, theme: Theme, styleFir
       return line.length > 0 ? theme.fg("toolOutput", line) : "";
     })
     .join("\n");
+}
+
+function expandHint(): string {
+  try {
+    return keyHint("app.tools.expand", "展开");
+  } catch {
+    return "Ctrl+O 展开";
+  }
 }
 
 function nativeDiff(diff: string, filePath: string | undefined, theme: Theme): string {

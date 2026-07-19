@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -61,8 +61,10 @@ describe("Pi tools", () => {
     expect(prompt).toContain("already satisfied");
     expect(tools.get("read")?.renderResult).toBeTypeOf("function");
     expect(edit.renderResult).toBeTypeOf("function");
+    expect(tools.get("write")?.renderResult).toBeTypeOf("function");
     expect(tools.get("search")?.renderResult).toBeTypeOf("function");
-    for (const name of ["read", "edit", "search"]) expect(tools.get(name)?.renderShell).toBe("default");
+    expect(tools.get("write")?.description).toContain("Fails without writing if the target already exists");
+    for (const name of ["read", "edit", "write", "search"]) expect(tools.get(name)?.renderShell).toBe("default");
   });
 
   it("merges call and result into one themed Pi-native component", async () => {
@@ -81,6 +83,16 @@ describe("Pi tools", () => {
         result: { content: [{ type: "text", text: "Updated file.txt\n[file.txt#1234ABCD]" }], details: { diff: "-1 one\n+1 ONE", patch: "patch", firstChangedLine: 1 } },
         compact: "替换 1 处 · tag 1234ABCD",
         expanded: "-1 one",
+      },
+      {
+        name: "write",
+        args: { path: "new.txt", content: "one\ntwo\n" },
+        result: {
+          content: [{ type: "text", text: "Created new.txt\n[new.txt#1234ABCD]\n2 lines, 8 bytes." }],
+          details: { path: "new.txt", tag: "1234ABCD", lines: 2, bytes: 8, created: true },
+        },
+        compact: "已创建 new.txt · 2 行 · tag 1234ABCD",
+        expanded: "仅创建，未覆盖已有文件",
       },
       {
         name: "search",
@@ -157,6 +169,69 @@ describe("Pi tools", () => {
     await expect(
       edit.execute("e2", { input: `${freshHeader}\nDEL 1` }, undefined, undefined, ctx),
     ).rejects.toThrow(/not shown/);
+  });
+
+  it("creates new files only, records an unseen fresh tag, and preserves existing targets", async () => {
+    const { dir, tools, ctx } = await harness();
+    const write = tools.get("write")!;
+    const edit = tools.get("edit")!;
+    await mkdir(join(dir, "nested"));
+    const result = await write.execute(
+      "w1",
+      { path: "nested/new.txt", content: "one\ntwo\n" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(await readFile(join(dir, "nested", "new.txt"), "utf8")).toBe("one\ntwo\n");
+    expect(textOf(result)).toMatch(/^Created nested\/new\.txt\n\[nested\/new\.txt#[0-9A-F]{8}\]/);
+    const header = textOf(result).split("\n")[1]!;
+    await expect(edit.execute("e1", { input: `${header}\nDEL 1` }, undefined, undefined, ctx)).rejects.toThrow(/not shown/);
+    await expect(
+      write.execute("w2", { path: "nested/new.txt", content: "replace\n" }, undefined, undefined, ctx),
+    ).rejects.toThrow(/already exists|did not write/i);
+    expect(await readFile(join(dir, "nested", "new.txt"), "utf8")).toBe("one\ntwo\n");
+    await tools.get("read")!.execute("r2", { path: "nested/new.txt" }, undefined, undefined, ctx);
+    await rm(join(dir, "nested", "new.txt"));
+    const recreated = await write.execute(
+      "w3",
+      { path: "nested/new.txt", content: "one\ntwo\n" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const recreatedHeader = textOf(recreated).split("\n")[1]!;
+    await expect(edit.execute("e2", { input: `${recreatedHeader}\nDEL 1` }, undefined, undefined, ctx)).rejects.toThrow(/not shown/);
+  });
+
+  it("limits edit display diff to one context line around each hunk", async () => {
+    const { dir, tools, ctx } = await harness();
+    const path = join(dir, "file.txt");
+    await writeFile(path, "one\ntwo\nthree\nfour\nfive\nsix\nseven\n");
+    const readResult = await tools.get("read")!.execute("r1", { path: "file.txt" }, undefined, undefined, ctx);
+    const header = textOf(readResult).split("\n")[0]!;
+    const result = await tools.get("edit")!.execute(
+      "e1",
+      { input: `${header}\nSWAP 4:\n+FOUR` },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const diff = (result.details as { diff: string }).diff;
+    expect(diff).toContain("3 three");
+    expect(diff).toContain("-4 four");
+    expect(diff).toContain("+4 FOUR");
+    expect(diff).toContain("5 five");
+    expect(diff).not.toContain("2 two");
+    expect(diff).not.toContain("6 six");
+  });
+
+  it("adds an actionable continuation offset when read output is truncated", async () => {
+    const { dir, tools, ctx } = await harness();
+    const content = Array.from({ length: 8000 }, (_, index) => `${index + 1}-${"x".repeat(20)}`).join("\n");
+    await writeFile(join(dir, "large.txt"), content);
+    const result = await tools.get("read")!.execute("r1", { path: "large.txt" }, undefined, undefined, ctx);
+    expect(textOf(result)).toMatch(/\[Output truncated\. Use offset=\d+ to continue\.\]/);
   });
 
   it("rejects an anchor that was not included in a partial read", async () => {

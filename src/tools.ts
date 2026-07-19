@@ -5,6 +5,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import {
   createGrepToolDefinition,
   createReadToolDefinition,
+  createWriteToolDefinition,
   generateDiffString,
   generateUnifiedPatch,
   truncateHead,
@@ -18,7 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { loadConfig, type DHashlineConfig } from "./config.js";
-import { atomicWriteText, displayPath, readTextFile, resolveInputPath } from "./files.js";
+import { atomicWriteText, createTextFileExclusive, displayPath, readTextFile, resolveInputPath } from "./files.js";
 import { computeFileTag, formatFileHeader, formatNumberedLines, getVisibleLines } from "./hash.js";
 import { parsePatch, preparePatch } from "./protocol.js";
 import { SnapshotStore } from "./snapshots.js";
@@ -38,6 +39,14 @@ const editSchema = Type.Object({
 
 type ReadInput = Static<typeof readSchema>;
 type EditInput = Static<typeof editSchema>;
+
+interface DHashlineWriteDetails {
+  readonly path: string;
+  readonly tag: string;
+  readonly lines: number;
+  readonly bytes: number;
+  readonly created: true;
+}
 
 const SNAPSHOT_ENTRY = "pi-dhashline:snapshot-v1";
 const SEEN_ENTRY = "pi-dhashline:seen-v1";
@@ -98,16 +107,17 @@ function snapshotIdentity(path: string, text: string): string {
   return `${path}\0${createHash("sha256").update(text, "utf8").digest("hex")}`;
 }
 
-function persistSnapshot(pi: ExtensionAPI, ctx: ExtensionContext, path: string, text: string): string {
+function persistSnapshot(pi: ExtensionAPI, ctx: ExtensionContext, path: string, text: string, fresh = false): string {
   const state = stateFor(ctx);
-  const tag = state.store.record(path, text);
+  const tag = fresh ? state.store.recordFresh(path, text) : state.store.record(path, text);
   const identity = snapshotIdentity(path, text);
-  if (!state.persisted.has(identity)) {
+  if (fresh || !state.persisted.has(identity)) {
     pi.appendEntry(SNAPSHOT_ENTRY, {
       cwd: ctx.cwd,
       path,
       tag,
       payload: gzipSync(Buffer.from(text, "utf8")).toString("base64"),
+      ...(fresh ? { fresh: true } : {}),
     });
     state.persisted.add(identity);
   }
@@ -132,7 +142,8 @@ function restoreSnapshotEntry(state: RuntimeState, data: Record<string, unknown>
     if (!isUtf8(bytes)) return;
     const text = bytes.toString("utf8");
     if (computeFileTag(text) !== data.tag) return;
-    state.store.record(data.path, text);
+    if (data.fresh === true) state.store.recordFresh(data.path, text);
+    else state.store.record(data.path, text);
     state.persisted.add(snapshotIdentity(data.path, text));
   } catch {
     // Corrupt or oversized persisted state is ignored, so its tags fail closed.
@@ -188,14 +199,19 @@ async function executeTextRead(pi: ExtensionAPI, params: ReadInput, ctx: Extensi
   const header = formatFileHeader(shownPath, tag);
   const body = formatNumberedLines(selected, offset);
   const truncation = truncateHead(body ? `${header}\n${body}` : header);
+  const visibleContent = truncation.content;
   const seen = new Set<number>();
-  for (const line of truncation.content.split("\n").slice(1)) {
+  for (const line of visibleContent.split("\n").slice(1)) {
     const match = /^(\d+):/.exec(line);
     if (match) seen.add(Number(match[1]));
   }
   persistSeen(pi, ctx, file.targetPath, tag, seen);
+  const nextOffset = seen.size > 0 ? Math.max(...seen) + 1 : offset;
+  const content = truncation.truncated
+    ? `${visibleContent}\n\n[Output truncated. Use offset=${nextOffset} to continue.]`
+    : visibleContent;
   return {
-    content: [{ type: "text", text: truncation.content }],
+    content: [{ type: "text", text: content }],
     details: truncation.truncated ? { truncation } : undefined,
   };
 }
@@ -244,14 +260,14 @@ async function executeEdit(pi: ExtensionAPI, params: EditInput, signal: AbortSig
     const file = await readTextFile(requested, stateFor(ctx).config.maxFileBytes);
     const prepared = preparePatch(parsed, file.targetPath, file.normalizedText, storeFor(ctx));
     const shownPath = displayPath(ctx.cwd, requested);
-    const generated = generateDiffString(file.normalizedText, prepared.text);
+    const generated = generateDiffString(file.normalizedText, prepared.text, 1);
     const details: EditToolDetails = {
       diff: generated.diff,
       patch: generateUnifiedPatch(shownPath, file.normalizedText, prepared.text),
       ...(generated.firstChangedLine === undefined ? {} : { firstChangedLine: generated.firstChangedLine }),
     };
     await atomicWriteText(file, prepared.text);
-    const freshTag = persistSnapshot(pi, ctx, file.targetPath, prepared.text);
+    const freshTag = persistSnapshot(pi, ctx, file.targetPath, prepared.text, true);
     const warning = prepared.warning ? `\nWarning: ${prepared.warning}` : "";
     return {
       content: [{ type: "text" as const, text: `Updated ${shownPath}\n${formatFileHeader(shownPath, freshTag)}${warning}\nRead or search the fresh tag before another edit.` }],
@@ -282,6 +298,64 @@ function registerEdit(pi: ExtensionAPI): void {
     },
     renderResult(result, options, theme, context) {
       return renderDHashlineResult("edit", result, options.expanded, theme, context);
+    },
+  });
+}
+
+async function executeWrite(
+  pi: ExtensionAPI,
+  params: { path: string; content: string },
+  signal: AbortSignal | undefined,
+  ctx: ExtensionContext,
+) {
+  assertNotAborted(signal);
+  const requested = resolveInputPath(ctx.cwd, stripLeadingAt(params.path));
+  return withFileMutationQueue(requested, async () => {
+    assertNotAborted(signal);
+    const created = await createTextFileExclusive(requested, params.content, stateFor(ctx).config.maxFileBytes);
+    const shownPath = displayPath(ctx.cwd, requested);
+    const freshTag = persistSnapshot(pi, ctx, created.targetPath, created.normalizedText, true);
+    const lines = getVisibleLines(created.normalizedText).length;
+    const details: DHashlineWriteDetails = {
+      path: shownPath,
+      tag: freshTag,
+      lines,
+      bytes: created.size,
+      created: true,
+    };
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Created ${shownPath}\n${formatFileHeader(shownPath, freshTag)}\n${lines} lines, ${created.size} bytes.\nRead or search the fresh tag before editing the new file.`,
+      }],
+      details,
+    };
+  });
+}
+
+function registerWrite(pi: ExtensionAPI): void {
+  const schemaSource = createWriteToolDefinition(".");
+  pi.registerTool({
+    name: "write",
+    label: "write",
+    renderShell: "default",
+    description: "Create a new UTF-8 text file only inside an existing real parent directory. Fails without writing if the target already exists; use read and edit for existing files.",
+    promptSnippet: "Create new text files; existing targets are never overwritten",
+    promptGuidelines: [
+      "Use write only to create a path that does not exist.",
+      "Create parent directories explicitly before write; DHashline never creates or follows a symbolic-link parent.",
+      "If write reports that the target exists, read it and use edit; never retry write as an overwrite.",
+      "After creation, read or search the file before editing so the fresh tag has seen-line anchors.",
+    ],
+    parameters: schemaSource.parameters,
+    execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      return executeWrite(pi, params, signal, ctx);
+    },
+    renderCall(args, theme, context) {
+      return renderDHashlineCall("write", args, theme, context);
+    },
+    renderResult(result, options, theme, context) {
+      return renderDHashlineResult("write", result, options.expanded, theme, context);
     },
   });
 }
@@ -422,5 +496,6 @@ function registerSearch(pi: ExtensionAPI): void {
 export function registerDHashlineTools(pi: ExtensionAPI): void {
   registerRead(pi);
   registerEdit(pi);
+  registerWrite(pi);
   registerSearch(pi);
 }
