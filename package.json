@@ -1,0 +1,62 @@
+{
+  "name": "pi-dhashline",
+  "version": "0.1.0",
+  "description": "Zero-runtime-dependency hash-anchored read, edit, and search tools for Pi.",
+  "type": "module",
+  "main": "index.ts",
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "AGENTS.md",
+    "doc",
+    "CHANGELOG.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "prepack": "npm run check"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "hashline",
+    "edit",
+    "search",
+    "zero-dependency"
+  ],
+  "license": "MIT",
+  "author": "diwu",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ssdiwu/pi-dhashline.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.10",
+    "@earendil-works/pi-tui": "^0.80.10",
+    "typebox": "^1.1.38"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.10",
+    "@earendil-works/pi-tui": "^0.80.10",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  }
+}
