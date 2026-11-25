@@ -8,8 +8,8 @@ describe("package contract", () => {
     expect(manifest.pi).toEqual({ extensions: ["./index.ts"] });
     expect(manifest.engines).toEqual({ node: ">=22.19.0" });
     expect(manifest.peerDependencies).toMatchObject({
-      "@earendil-works/pi-coding-agent": "^0.80.10",
-      "@earendil-works/pi-tui": "^0.80.10",
+      "@earendil-works/pi-coding-agent": "^0.80.10 || ^1.6.0",
+      "@earendil-works/pi-tui": "^0.80.10 || ^1.6.0",
       typebox: "^1.1.38",
     });
   });

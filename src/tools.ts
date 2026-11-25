@@ -447,7 +447,7 @@ function recordVisibleSearchLines(pi: ExtensionAPI, output: string, groups: Sear
   }
 }
 
-async function executeSearch(pi: ExtensionAPI, native: ReturnType<typeof createGrepToolDefinition>, toolCallId: string, params: Static<typeof native.parameters>, signal: AbortSignal | undefined, onUpdate: Parameters<typeof native.execute>[3], ctx: ExtensionContext) {
+async function executeSearch(pi: ExtensionAPI, native: ReturnType<typeof createGrepToolDefinition>, toolCallId: string, params: Static<typeof native.parameters>, signal: AbortSignal | undefined, onUpdate: Parameters<typeof native.execute>[3], ctx: Parameters<typeof native.execute>[4]) {
   assertNotAborted(signal);
   const normalized = { ...params, ...(params.path === undefined ? {} : { path: stripLeadingAt(params.path) }) };
   const result = await native.execute(toolCallId, normalized, signal, onUpdate, ctx);

@@ -5,6 +5,8 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { afterEach, describe, expect, it } from "vitest";
 import extension from "../index.js";
 
+type ToolContext = Parameters<ToolDefinition["execute"]>[4];
+
 const cleanups: string[] = [];
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -35,8 +37,8 @@ function runtime(entries: CustomEntry[]) {
   return { tools, events };
 }
 
-function context(cwd: string, entries: CustomEntry[], branch: CustomEntry[] = entries): ExtensionContext {
-  return { cwd, sessionManager: { getEntries: () => entries, getBranch: () => branch } } as unknown as ExtensionContext;
+function context(cwd: string, entries: CustomEntry[], branch: CustomEntry[] = entries): ToolContext {
+  return { cwd, sessionManager: { getEntries: () => entries, getBranch: () => branch } } as unknown as ToolContext;
 }
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {

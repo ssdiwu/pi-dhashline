@@ -1,16 +1,18 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerDHashlineTools } from "../src/tools.js";
+
+type ToolContext = Parameters<ToolDefinition["execute"]>[4];
 
 const cleanups: string[] = [];
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-async function harness(): Promise<{ dir: string; tools: Map<string, ToolDefinition>; ctx: ExtensionContext }> {
+async function harness(): Promise<{ dir: string; tools: Map<string, ToolDefinition>; ctx: ToolContext }> {
   const dir = await mkdtemp(join(tmpdir(), "pi-dhashline-tools-"));
   cleanups.push(dir);
   const tools = new Map<string, ToolDefinition>();
@@ -21,7 +23,7 @@ async function harness(): Promise<{ dir: string; tools: Map<string, ToolDefiniti
     appendEntry() {},
   } as unknown as ExtensionAPI;
   registerDHashlineTools(pi);
-  const ctx = { cwd: dir, sessionManager: {} } as unknown as ExtensionContext;
+  const ctx = { cwd: dir, sessionManager: {} } as unknown as ToolContext;
   return { dir, tools, ctx };
 }
 
@@ -29,7 +31,7 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }): st
   return result.content.find((item) => item.type === "text")?.text ?? "";
 }
 
-function rendered(component: { render(width: number): string[] }): string {
+function rendered(component: { render(width: number): readonly string[] }): string {
   return component.render(120).join("\n");
 }
 
